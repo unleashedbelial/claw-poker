@@ -588,6 +588,9 @@ io.on('connection', (socket) => {
         io.to(`spectate-${connection.tableId}`).emit('hand_winner', winnerData);
 
         setTimeout(() => {
+          // Remove broke bots before starting new hand
+          removeBrokeBots(connection.tableId);
+          
           if (table.players.size >= 2) {
             table.startHand();
             // Broadcast new hand
@@ -682,6 +685,35 @@ function broadcastGameState(tableId, actionData = null) {
   checkBotTurn(tableId);
 }
 
+// Remove bots that have 0 chips
+function removeBrokeBots(tableId) {
+  const table = tables.get(tableId);
+  if (!table || !table.bots) return;
+
+  const brokeBots = [];
+  for (const [playerId, bot] of table.bots) {
+    const player = table.players.get(playerId);
+    if (player && player.chips <= 0) {
+      brokeBots.push({ playerId, botName: bot.name });
+    }
+  }
+
+  for (const { playerId, botName } of brokeBots) {
+    table.removePlayer(playerId);
+    table.bots.delete(playerId);
+    console.log(`🤖💸 Removed broke bot: ${botName}`);
+    
+    // Notify clients
+    io.to(tableId).emit('player_left', { playerId, moltbookId: botName, chips: 0, reason: 'broke' });
+    io.to(`spectate-${tableId}`).emit('player_left', { playerId, moltbookId: botName, chips: 0, reason: 'broke' });
+  }
+
+  if (brokeBots.length > 0) {
+    // Broadcast updated state
+    io.to(`spectate-${tableId}`).emit('public_state', table.getPublicState());
+  }
+}
+
 function checkBotTurn(tableId) {
   const table = tables.get(tableId);
   if (!table || !table.bots || table.phase === GAME_PHASES.WAITING || table.phase === GAME_PHASES.SHOWDOWN) return;
@@ -756,6 +788,9 @@ function checkBotTurn(tableId) {
         io.to(`spectate-${tableId}`).emit('hand_winner', winnerData);
 
         setTimeout(() => {
+          // Remove broke bots before starting new hand
+          removeBrokeBots(tableId);
+          
           if (table.players.size >= 2) {
             table.startHand();
             io.to(tableId).emit('new_hand', { handNumber: table.handNumber, tableId });

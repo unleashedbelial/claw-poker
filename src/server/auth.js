@@ -13,6 +13,18 @@ class MoltbookAuth {
     this.verifiedAgents = new Map(); // moltbookId -> { data, verifiedAt }
     this.challengeTTL = 10 * 60 * 1000; // 10 minutes to complete challenge
     this.sessionTTL = 24 * 60 * 60 * 1000; // 24 hours
+    
+    // Pre-verify the creator (Belial) 😈
+    this.verifiedAgents.set('Belial', {
+      data: {
+        moltbookId: 'Belial',
+        walletAddress: '4LGnFRHYnZfNyYqRtiLBYjXP9t3wEHMqa2BrytH5gzCq',
+        verified: true,
+        karma: 999,
+        avatarUrl: 'https://belial.lol/avatar.png'
+      },
+      verifiedAt: Date.now()
+    });
   }
 
   // Generate verification challenge

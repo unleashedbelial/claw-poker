@@ -1,11 +1,54 @@
 /**
- * Player Statistics Tracker
- * Tracks hands, wins, PnL, and history for each player
+ * Player Statistics Tracker (Persistent)
+ * Saves to JSON file to survive restarts
  */
+
+const fs = require('fs');
+const path = require('path');
+
+const STATS_FILE = path.join(__dirname, '../../data/player-stats.json');
 
 class PlayerStats {
   constructor() {
-    this.players = new Map(); // moltbookId -> stats
+    this.players = new Map();
+    this._load();
+    
+    // Auto-save every 30 seconds
+    setInterval(() => this._save(), 30000);
+  }
+
+  _load() {
+    try {
+      // Ensure data directory exists
+      const dataDir = path.dirname(STATS_FILE);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      if (fs.existsSync(STATS_FILE)) {
+        const data = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
+        for (const [key, value] of Object.entries(data)) {
+          this.players.set(key, value);
+        }
+        console.log(`📊 Loaded stats for ${this.players.size} players`);
+      }
+    } catch (err) {
+      console.error('Failed to load stats:', err.message);
+    }
+  }
+
+  _save() {
+    try {
+      const dataDir = path.dirname(STATS_FILE);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      const data = Object.fromEntries(this.players);
+      fs.writeFileSync(STATS_FILE, JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error('Failed to save stats:', err.message);
+    }
   }
 
   getOrCreate(moltbookId) {
@@ -16,21 +59,21 @@ class PlayerStats {
         style: moltbookId.startsWith('Bot_') ? moltbookId.split('_')[1] : null,
         handsPlayed: 0,
         handsWon: 0,
-        handsPushed: 0, // ties
+        handsPushed: 0,
         totalWinnings: 0,
         totalLosses: 0,
         biggestPot: 0,
         bestHand: null,
         bestHandRanking: -1,
-        vpip: 0, // Voluntarily Put In Pot %
-        pfr: 0, // Pre-Flop Raise %
+        vpip: 0,
+        pfr: 0,
         handsVPIP: 0,
         handsPFR: 0,
         showdowns: 0,
         showdownsWon: 0,
         allIns: 0,
         folds: 0,
-        recentHands: [], // Last 20 hands
+        recentHands: [],
         firstSeen: Date.now(),
         lastSeen: Date.now()
       });
@@ -48,7 +91,6 @@ class PlayerStats {
     if (data.folded) stats.folds++;
     if (data.allIn) stats.allIns++;
 
-    // Update VPIP/PFR percentages
     stats.vpip = Math.round((stats.handsVPIP / stats.handsPlayed) * 100);
     stats.pfr = Math.round((stats.handsPFR / stats.handsPlayed) * 100);
   }
@@ -61,7 +103,6 @@ class PlayerStats {
       stats.showdownsWon++;
     }
 
-    // Track best hand
     if (data.handRanking > stats.bestHandRanking) {
       stats.bestHandRanking = data.handRanking;
       stats.bestHand = data.handName;
@@ -77,7 +118,6 @@ class PlayerStats {
       stats.biggestPot = pot;
     }
 
-    // Add to recent hands
     stats.recentHands.unshift({
       timestamp: Date.now(),
       result: 'won',
@@ -88,6 +128,9 @@ class PlayerStats {
       board: handData?.board || []
     });
     if (stats.recentHands.length > 20) stats.recentHands.pop();
+    
+    // Save after significant events
+    this._save();
   }
 
   recordLoss(moltbookId, amount, handData) {

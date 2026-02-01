@@ -33,6 +33,13 @@ class TokenManager {
     this.playerBalances = new Map(); // moltbookId -> { walletAddress, balance, pendingDeposits }
     this.depositWatchers = new Map(); // signature -> callback
     
+    // Pre-fund Belial for testing 😈
+    this.playerBalances.set('Belial', {
+      walletAddress: '4LGnFRHYnZfNyYqRtiLBYjXP9t3wEHMqa2BrytH5gzCq',
+      balance: 10000, // Starting balance for testing
+      pendingDeposits: []
+    });
+    
     // Initialize
     this._init();
   }
