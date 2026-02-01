@@ -635,6 +635,15 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Serve SKILL.md for agents
+app.get('/skill.md', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../SKILL.md'));
+});
+
+app.get('/SKILL.md', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../SKILL.md'));
+});
+
 // Serve frontend (Express 5 syntax)
 app.get('/{*path}', (req, res) => {
   res.sendFile(path.join(__dirname, '../../public/index.html'));
