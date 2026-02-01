@@ -17,6 +17,7 @@ const { Table, GAME_PHASES } = require('../game/table');
 const { MoltbookAuth } = require('./auth');
 const { PokerBot } = require('../game/bot');
 const { TokenManager } = require('../solana/token');
+const { BaseTokenManager } = require('../base/token');
 
 const app = express();
 const httpServer = createServer(app);
@@ -44,7 +45,8 @@ const rateLimiter = new RateLimiterMemory({
 // State
 const tables = new Map();
 const auth = new MoltbookAuth();
-const tokenManager = new TokenManager();
+const tokenManager = new TokenManager(); // Solana
+const baseTokenManager = new BaseTokenManager(); // Base
 const connectedPlayers = new Map(); // socketId -> { moltbookId, walletAddress, tableId, playerId }
 
 // Create default tables
@@ -197,13 +199,123 @@ app.post('/api/wallet/withdraw', async (req, res) => {
 
 // House wallet info (public)
 app.get('/api/wallet/house', async (req, res) => {
-  const balance = await tokenManager.getHouseBalance();
+  const solBalance = await tokenManager.getHouseBalance();
+  const baseBalance = await baseTokenManager.getHouseBalance();
   res.json({
-    address: tokenManager.getDepositAddress(),
-    balance,
-    token: '5aZvoPUQjReSSf38hciLYHGZb8CLBSRP6LeBBraVZrHh',
+    solana: {
+      address: tokenManager.getDepositAddress(),
+      balance: solBalance,
+      token: '5aZvoPUQjReSSf38hciLYHGZb8CLBSRP6LeBBraVZrHh'
+    },
+    base: {
+      address: baseTokenManager.getDepositAddress(),
+      balance: baseBalance,
+      token: '0x1f44E22707Dc2259146308E6FbE8965090dac46D'
+    },
     tokenSymbol: '$BELIAL'
   });
+});
+
+// ========== BASE CHAIN ENDPOINTS ==========
+
+// Get Base deposit instructions
+app.get('/api/wallet/base/deposit', (req, res) => {
+  const { moltbookId } = req.query;
+  
+  if (!moltbookId) {
+    return res.status(400).json({ error: 'moltbookId required' });
+  }
+
+  if (!auth.isVerified(moltbookId)) {
+    return res.status(401).json({ error: 'Agent not verified' });
+  }
+
+  const instructions = baseTokenManager.getDepositInstructions(moltbookId);
+  const balance = baseTokenManager.getPlayerBalance(moltbookId);
+  
+  res.json({
+    ...instructions,
+    currentBalance: balance
+  });
+});
+
+// Register Base wallet
+app.post('/api/wallet/base/register', (req, res) => {
+  const { moltbookId, baseWallet } = req.body;
+  
+  if (!moltbookId || !baseWallet) {
+    return res.status(400).json({ error: 'moltbookId and baseWallet required' });
+  }
+
+  if (!auth.isVerified(moltbookId)) {
+    return res.status(401).json({ error: 'Agent not verified' });
+  }
+
+  // Validate Ethereum address
+  if (!/^0x[a-fA-F0-9]{40}$/.test(baseWallet)) {
+    return res.status(400).json({ error: 'Invalid Base wallet address' });
+  }
+
+  const balance = baseTokenManager.registerPlayer(moltbookId, baseWallet);
+  res.json({ success: true, moltbookId, baseWallet, balance });
+});
+
+// Get Base balance
+app.get('/api/wallet/base/balance', (req, res) => {
+  const { moltbookId } = req.query;
+  
+  if (!moltbookId) {
+    return res.status(400).json({ error: 'moltbookId required' });
+  }
+
+  const balance = baseTokenManager.getPlayerBalance(moltbookId);
+  res.json({ moltbookId, balance, chain: 'base' });
+});
+
+// Verify Base deposit
+app.post('/api/wallet/base/verify-deposit', async (req, res) => {
+  const { moltbookId, txHash } = req.body;
+  
+  if (!moltbookId || !txHash) {
+    return res.status(400).json({ error: 'moltbookId and txHash required' });
+  }
+
+  if (!auth.isVerified(moltbookId)) {
+    return res.status(401).json({ error: 'Agent not verified' });
+  }
+
+  try {
+    const result = await baseTokenManager.verifyDeposit(moltbookId, txHash);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Withdraw $BELIAL on Base
+app.post('/api/wallet/base/withdraw', async (req, res) => {
+  const { moltbookId, amount } = req.body;
+  
+  if (!moltbookId || amount === undefined) {
+    return res.status(400).json({ error: 'moltbookId and amount required' });
+  }
+
+  const withdrawAmount = parseFloat(amount);
+  if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+    return res.status(400).json({ error: 'Amount must be positive' });
+  }
+
+  if (!auth.isVerified(moltbookId)) {
+    return res.status(401).json({ error: 'Agent not verified' });
+  }
+
+  try {
+    const result = await baseTokenManager.withdraw(moltbookId, withdrawAmount);
+    console.log(`🏧 [Base] Withdrawal: ${moltbookId} withdrew ${withdrawAmount} $BELIAL`);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 // ========== END TOKEN ENDPOINTS ==========
@@ -281,16 +393,27 @@ io.on('connection', (socket) => {
         });
       }
 
-      // Check $BELIAL balance
-      const balance = tokenManager.getPlayerBalance(moltbookId);
-      if (balance < buyIn) {
+      // Check $BELIAL balance (Solana or Base)
+      const solanaBalance = tokenManager.getPlayerBalance(moltbookId);
+      const baseBalance = baseTokenManager.getPlayerBalance(moltbookId);
+      const totalBalance = solanaBalance + baseBalance;
+      
+      if (totalBalance < buyIn) {
         return socket.emit('error', { 
-          message: `Insufficient $BELIAL balance. Have: ${balance}, need: ${buyIn}. Deposit at: ${tokenManager.getDepositAddress()}` 
+          message: `Insufficient $BELIAL balance. Have: ${totalBalance} (Solana: ${solanaBalance}, Base: ${baseBalance}), need: ${buyIn}. Deposit first!` 
         });
       }
 
-      // Debit the buy-in from their balance
-      tokenManager.debitBalance(moltbookId, buyIn);
+      // Debit from Solana first, then Base if needed
+      let remaining = buyIn;
+      if (solanaBalance > 0) {
+        const fromSolana = Math.min(solanaBalance, remaining);
+        tokenManager.debitBalance(moltbookId, fromSolana);
+        remaining -= fromSolana;
+      }
+      if (remaining > 0 && baseBalance > 0) {
+        baseTokenManager.debitBalance(moltbookId, remaining);
+      }
 
       // Add player to table
       const { seat, playerId } = table.addPlayer(moltbookId, walletAddress, buyIn);

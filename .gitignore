@@ -8,3 +8,4 @@ node_modules/
 
 # Config (secrets)
 config/
+config/house-wallet-base.json
