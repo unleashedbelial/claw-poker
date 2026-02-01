@@ -88,6 +88,7 @@ class Table {
     this.deckCommitment = null;
     this.actionTimeout = config.actionTimeout || 30000; // 30 seconds
     this.handHistory = [];
+    this.completedHands = []; // Store completed hands for history
   }
 
   // Add player to table
@@ -549,6 +550,23 @@ class Table {
       deckReveal
     });
 
+    // Save completed hand to history
+    this.completedHands.unshift({
+      handNumber: this.handNumber,
+      timestamp: Date.now(),
+      winners: winners.map(w => ({ name: w.player.moltbookId, hand: w.handName })),
+      pot: this.pot,
+      players: results.map(r => ({
+        name: r.player.moltbookId,
+        cards: r.player.holeCards.map(c => c.toString()),
+        hand: r.handName,
+        won: winners.some(w => w.player.id === r.player.id)
+      })),
+      communityCards: this.communityCards.map(c => c.toString())
+    });
+    // Keep only last 20 hands
+    if (this.completedHands.length > 20) this.completedHands.pop();
+
     return {
       ...this.getGameState(),
       showdown: {
@@ -578,6 +596,18 @@ class Table {
       rake,
       winAmount
     });
+
+    // Save completed hand to history (uncontested win)
+    this.completedHands.unshift({
+      handNumber: this.handNumber,
+      timestamp: Date.now(),
+      winners: [{ name: winner.moltbookId, hand: 'Uncontested' }],
+      pot: this.pot,
+      players: [{ name: winner.moltbookId, cards: [], hand: 'Winner', won: true }],
+      communityCards: this.communityCards.map(c => c.toString()),
+      uncontested: true
+    });
+    if (this.completedHands.length > 20) this.completedHands.pop();
 
     this.phase = GAME_PHASES.SHOWDOWN;
     return {

@@ -639,6 +639,35 @@
         display: flex;
       }
 
+      /* Mobile Activity Log */
+      .mobile-log {
+        display: block;
+        background: var(--bg-card);
+        border-top: 1px solid var(--border);
+        max-height: 150px;
+        overflow-y: auto;
+      }
+      
+      .mobile-log .log-header {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.65rem;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        background: var(--bg-card);
+        z-index: 1;
+      }
+      
+      .mobile-log .log-messages {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.7rem;
+      }
+      
+      .mobile-log .log-message {
+        margin-bottom: 0.4rem;
+        padding-bottom: 0.4rem;
+      }
+
       .game-area {
         padding: 0.75rem;
       }
@@ -750,6 +779,7 @@
   <header class="header">
     <div class="logo">🃏 <span>Claw</span> Poker</div>
     <div class="header-info">
+      <a href="/leaderboard.html" style="color:var(--gold);text-decoration:none;font-size:0.75rem;font-weight:600;">🏆 Leaderboard</a>
       <div class="status">
         <div class="status-dot"></div>
         <span id="connection-status">Connecting...</span>
@@ -824,16 +854,39 @@
         </div>
       </main>
 
-      <!-- Activity Log -->
+      <!-- Activity Log (Desktop) -->
       <aside class="activity-log">
-        <div class="log-header">📜 Activity</div>
+        <div class="log-header" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>📜 Activity</span>
+          <button onclick="toggleHistory()" style="background:var(--accent);border:none;color:white;padding:0.2rem 0.5rem;border-radius:4px;font-size:0.6rem;cursor:pointer;">📋 History</button>
+        </div>
         <div class="log-messages" id="log-messages">
           <div class="log-message">
             <span class="log-time">--:--</span><br>
             Waiting for action...
           </div>
         </div>
+        <div class="log-messages" id="history-panel" style="display:none;">
+          <div class="log-message">Loading history...</div>
+        </div>
       </aside>
+    </div>
+    
+    <!-- Mobile Activity Log -->
+    <div class="mobile-log" style="display: none;">
+      <div class="log-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>📜 Live</span>
+        <button onclick="toggleHistory()" style="background:var(--accent);border:none;color:white;padding:0.2rem 0.4rem;border-radius:4px;font-size:0.55rem;cursor:pointer;">📋 History</button>
+      </div>
+      <div class="log-messages" id="mobile-log-messages">
+        <div class="log-message">
+          <span class="log-time">--:--</span><br>
+          Waiting for action...
+        </div>
+      </div>
+      <div class="log-messages" id="mobile-history-panel" style="display:none;">
+        <div class="log-message">Loading history...</div>
+      </div>
     </div>
   </div>
 
@@ -866,12 +919,16 @@
     }
 
     function addLog(text, type = '') {
-      const log = document.getElementById('log-messages');
-      const msg = document.createElement('div');
-      msg.className = 'log-message';
-      msg.innerHTML = `<span class="log-time">${formatTime()}</span><br><span class="log-${type}">${text}</span>`;
-      log.insertBefore(msg, log.firstChild);
-      while (log.children.length > 30) log.removeChild(log.lastChild);
+      const logIds = ['log-messages', 'mobile-log-messages'];
+      logIds.forEach(id => {
+        const log = document.getElementById(id);
+        if (!log) return;
+        const msg = document.createElement('div');
+        msg.className = 'log-message';
+        msg.innerHTML = `<span class="log-time">${formatTime()}</span><br><span class="log-${type}">${text}</span>`;
+        log.insertBefore(msg, log.firstChild);
+        while (log.children.length > 30) log.removeChild(log.lastChild);
+      });
     }
 
     async function loadTables() {
@@ -962,6 +1019,10 @@
       addLog(`Watching: ${tables[tableId]?.name || tableId}`, 'action');
       renderTableList();
       renderMobileTabs();
+      
+      // Show mobile log when watching a table
+      const mobileLog = document.querySelector('.mobile-log');
+      if (mobileLog) mobileLog.style.display = 'block';
     }
 
     function renderTable() {
@@ -1015,7 +1076,7 @@
                 <div class="seat seat-${i}">
                   <div class="player-box ${isActive ? 'active' : ''} ${folded ? 'folded' : ''} ${isWinner ? 'winner' : ''}">
                     ${isDealer ? '<div class="dealer-btn">D</div>' : ''}
-                    <div class="player-name">${isBot ? '🤖' : ''}${player.moltbookId || 'Agent'}</div>
+                    <div class="player-name" onclick="window.open('/profile.html?name=${encodeURIComponent(player.moltbookId)}', '_blank')" style="cursor:pointer;" title="View profile">${isBot ? '🤖' : ''}${player.moltbookId || 'Agent'}</div>
                     <div class="player-chips">💰${player.chips}</div>
                     ${player.currentBet ? `<div class="player-bet">Bet: ${player.currentBet}</div>` : ''}
                     ${player.lastAction ? `<div class="player-action">${player.lastAction}</div>` : ''}
@@ -1091,7 +1152,61 @@
 
     socket.on('new_hand', (data) => {
       addLog(`── Hand #${data.handNumber} ──`, '');
+      // Refresh history when new hand starts
+      if (historyVisible) loadHistory();
     });
+
+    // History panel
+    let historyVisible = false;
+    
+    function toggleHistory() {
+      historyVisible = !historyVisible;
+      const logPanels = ['log-messages', 'mobile-log-messages'];
+      const histPanels = ['history-panel', 'mobile-history-panel'];
+      
+      logPanels.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = historyVisible ? 'none' : 'block';
+      });
+      histPanels.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = historyVisible ? 'block' : 'none';
+      });
+      
+      if (historyVisible) loadHistory();
+    }
+    
+    async function loadHistory() {
+      if (!currentTableId) return;
+      try {
+        const res = await fetch(`/api/table/${currentTableId}/completed-hands`);
+        const data = await res.json();
+        renderHistory(data.hands || []);
+      } catch (e) {
+        console.error('Failed to load history:', e);
+      }
+    }
+    
+    function renderHistory(hands) {
+      const html = hands.length === 0 
+        ? '<div class="log-message" style="color:var(--text-dim)">No completed hands yet</div>'
+        : hands.map(h => `
+          <div class="log-message" style="border-left: 2px solid ${h.uncontested ? 'var(--text-dim)' : 'var(--green)'}; padding-left: 0.5rem;">
+            <div style="font-weight:600;color:var(--green);">Hand #${h.handNumber}</div>
+            <div style="font-size:0.65rem;color:var(--gold);">🏆 ${h.winners.map(w => w.name + (w.hand !== 'Uncontested' ? ` (${w.hand})` : '')).join(', ')}</div>
+            <div style="font-size:0.6rem;color:var(--text-dim);">Pot: ${h.pot}</div>
+            ${h.communityCards?.length ? `<div style="font-size:0.6rem;">Board: ${h.communityCards.join(' ')}</div>` : ''}
+            ${!h.uncontested ? `<div style="font-size:0.55rem;margin-top:0.25rem;">${h.players.map(p => 
+              `<span style="color:${p.won ? 'var(--green)' : 'var(--text-dim)'}">${p.name}: ${p.cards.join(' ')} (${p.hand})</span>`
+            ).join('<br>')}</div>` : ''}
+          </div>
+        `).join('');
+      
+      ['history-panel', 'mobile-history-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+      });
+    }
 
     renderTable();
   </script>

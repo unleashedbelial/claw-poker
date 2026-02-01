@@ -18,6 +18,7 @@ const { MoltbookAuth } = require('./auth');
 const { PokerBot } = require('../game/bot');
 const { TokenManager } = require('../solana/token');
 const { BaseTokenManager } = require('../base/token');
+const { PlayerStats } = require('../game/stats');
 
 const app = express();
 const httpServer = createServer(app);
@@ -47,6 +48,7 @@ const tables = new Map();
 const auth = new MoltbookAuth();
 const tokenManager = new TokenManager(); // Solana
 const baseTokenManager = new BaseTokenManager(); // Base
+const playerStats = new PlayerStats(); // Player statistics tracker
 const connectedPlayers = new Map(); // socketId -> { moltbookId, walletAddress, tableId, playerId }
 
 // Create default tables
@@ -63,6 +65,74 @@ function initTables() {
   }
 
   console.log(`✅ Created ${tables.size} tables`);
+}
+
+// Track player statistics after a hand
+function trackHandStats(table, result) {
+  try {
+    const board = table.communityCards?.map(c => c.toString()) || [];
+    const pot = result.showdown?.pot || result.winner?.amount || table.pot;
+    
+    // Get all players in the hand
+    for (const [playerId, player] of table.players) {
+      const moltbookId = player.moltbookId;
+      const cards = player.holeCards?.map(c => c.toString()) || [];
+      
+      // Record that they played this hand
+      playerStats.recordHandPlayed(moltbookId, {
+        vpip: player.totalBetThisHand > table.bigBlind,
+        pfr: player.lastAction === 'raise' && table.phase === 'preflop',
+        folded: player.folded,
+        allIn: player.allIn
+      });
+      
+      if (result.showdown) {
+        // Showdown - track results for each player
+        const showdownResult = result.showdown.results?.find(r => r.playerId === playerId);
+        if (showdownResult) {
+          const won = result.showdown.winners?.includes(playerId);
+          
+          playerStats.recordShowdown(moltbookId, {
+            won,
+            handName: showdownResult.handName,
+            handRanking: showdownResult.handRanking || 0
+          });
+          
+          if (won) {
+            const winAmount = result.showdown.winAmount || Math.floor(pot / result.showdown.winners.length);
+            playerStats.recordWin(moltbookId, winAmount, pot, {
+              handName: showdownResult.handName,
+              cards,
+              board
+            });
+          } else {
+            playerStats.recordLoss(moltbookId, player.totalBetThisHand, {
+              handName: showdownResult.handName,
+              cards,
+              board
+            });
+          }
+        }
+      } else if (result.winner) {
+        // Uncontested win
+        if (result.winner.playerId === playerId) {
+          playerStats.recordWin(moltbookId, result.winner.amount, pot, {
+            handName: 'Uncontested',
+            cards,
+            board
+          });
+        } else if (!player.folded) {
+          playerStats.recordLoss(moltbookId, player.totalBetThisHand, {
+            handName: null,
+            cards: [],
+            board
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error tracking stats:', err.message);
+  }
 }
 
 // API Routes
@@ -500,6 +570,9 @@ io.on('connection', (socket) => {
 
       // Handle showdown / hand end
       if (result.showdown || result.winner) {
+        // Track player stats
+        trackHandStats(table, result);
+        
         // Broadcast winner info
         const winnerData = {
           winners: result.showdown?.winners?.map(id => {
@@ -666,6 +739,9 @@ function checkBotTurn(tableId) {
 
       // Handle showdown / hand end
       if (result.showdown || result.winner) {
+        // Track player stats
+        trackHandStats(table, result);
+        
         const winnerData = {
           winners: result.showdown?.winners?.map(id => {
             const p = table.players.get(id);
@@ -746,6 +822,36 @@ app.get('/api/table/:id/history', (req, res) => {
     return res.status(404).json({ error: 'Table not found' });
   }
   res.json({ handNumber: table.handNumber, history: table.handHistory });
+});
+
+// Get completed hands history
+app.get('/api/table/:id/completed-hands', (req, res) => {
+  const table = tables.get(req.params.id);
+  if (!table) {
+    return res.status(404).json({ error: 'Table not found' });
+  }
+  res.json({ hands: table.completedHands || [] });
+});
+
+// Player profiles and stats
+app.get('/api/player/:name', (req, res) => {
+  const stats = playerStats.getStats(decodeURIComponent(req.params.name));
+  if (!stats) {
+    return res.status(404).json({ error: 'Player not found', hint: 'Player must have played at least one hand' });
+  }
+  res.json(stats);
+});
+
+app.get('/api/players', (req, res) => {
+  const all = playerStats.getAllPlayers();
+  res.json({ players: all, count: all.length });
+});
+
+app.get('/api/leaderboard', (req, res) => {
+  const sortBy = req.query.sort || 'pnl';
+  const limit = parseInt(req.query.limit) || 10;
+  const leaderboard = playerStats.getLeaderboard(sortBy, limit);
+  res.json({ leaderboard, sortBy });
 });
 
 // Health check
