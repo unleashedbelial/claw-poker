@@ -113,6 +113,9 @@ app.post('/api/auth/verify', async (req, res) => {
   }
 });
 
+// Track spectators
+const spectators = new Map(); // socketId -> tableId
+
 // Socket.IO for real-time gameplay
 io.on('connection', (socket) => {
   console.log(`🔌 Connected: ${socket.id}`);
@@ -124,6 +127,38 @@ io.on('connection', (socket) => {
       next();
     } catch {
       next(new Error('Rate limited'));
+    }
+  });
+
+  // Spectate a table (no auth required)
+  socket.on('spectate', (data) => {
+    const { tableId } = data;
+    const table = tables.get(tableId);
+    
+    if (!table) {
+      return socket.emit('error', { message: 'Table not found' });
+    }
+
+    // Leave previous table if any
+    const prevTable = spectators.get(socket.id);
+    if (prevTable) {
+      socket.leave(`spectate-${prevTable}`);
+    }
+
+    // Join spectator room
+    spectators.set(socket.id, tableId);
+    socket.join(`spectate-${tableId}`);
+
+    // Send current state
+    socket.emit('public_state', table.getPublicState());
+    console.log(`👁️ Spectator joined ${tableId}`);
+  });
+
+  socket.on('leave_spectate', (data) => {
+    const tableId = spectators.get(socket.id);
+    if (tableId) {
+      socket.leave(`spectate-${tableId}`);
+      spectators.delete(socket.id);
     }
   });
 
@@ -216,14 +251,37 @@ io.on('connection', (socket) => {
           return socket.emit('error', { message: 'Invalid action' });
       }
 
-      // Broadcast updated state
-      broadcastGameState(connection.tableId);
+      // Broadcast action to spectators
+      const actionData = {
+        moltbookId: connection.moltbookId,
+        action,
+        amount: amount || null,
+        tableId: connection.tableId
+      };
+
+      // Broadcast updated state with action data
+      broadcastGameState(connection.tableId, actionData);
 
       // Handle showdown / hand end
       if (result.showdown || result.winner) {
+        // Broadcast winner info
+        const winnerData = {
+          winners: result.showdown?.winners?.map(id => {
+            const player = table.players.get(id);
+            return { id, moltbookId: player?.moltbookId };
+          }) || (result.winner ? [{ id: result.winner.playerId, moltbookId: table.players.get(result.winner.playerId)?.moltbookId }] : []),
+          pot: result.showdown?.totalPot || result.winner?.chips || table.pot,
+          tableId: connection.tableId
+        };
+        io.to(connection.tableId).emit('hand_winner', winnerData);
+        io.to(`spectate-${connection.tableId}`).emit('hand_winner', winnerData);
+
         setTimeout(() => {
           if (table.players.size >= 2) {
             table.startHand();
+            // Broadcast new hand
+            io.to(connection.tableId).emit('new_hand', { handNumber: table.handNumber, tableId: connection.tableId });
+            io.to(`spectate-${connection.tableId}`).emit('new_hand', { handNumber: table.handNumber, tableId: connection.tableId });
             broadcastGameState(connection.tableId);
           }
         }, 5000);
@@ -244,23 +302,36 @@ io.on('connection', (socket) => {
 });
 
 function handleDisconnect(socket) {
+  // Handle player disconnect
   const connection = connectedPlayers.get(socket.id);
   if (connection) {
     const table = tables.get(connection.tableId);
     if (table) {
       const chips = table.removePlayer(connection.playerId);
-      io.to(connection.tableId).emit('player_left', {
+      const disconnectData = {
         playerId: connection.playerId,
         moltbookId: connection.moltbookId,
         chips
-      });
+      };
+      io.to(connection.tableId).emit('player_left', disconnectData);
+      io.to(`spectate-${connection.tableId}`).emit('player_left', disconnectData);
       console.log(`👋 ${connection.moltbookId} left ${connection.tableId}`);
+      
+      // Broadcast updated state to spectators
+      io.to(`spectate-${connection.tableId}`).emit('public_state', table.getPublicState());
     }
     connectedPlayers.delete(socket.id);
   }
+
+  // Handle spectator disconnect
+  const spectatorTable = spectators.get(socket.id);
+  if (spectatorTable) {
+    spectators.delete(socket.id);
+    console.log(`👁️ Spectator left ${spectatorTable}`);
+  }
 }
 
-function broadcastGameState(tableId) {
+function broadcastGameState(tableId, actionData = null) {
   const table = tables.get(tableId);
   if (!table) return;
 
@@ -274,8 +345,16 @@ function broadcastGameState(tableId) {
     }
   }
 
-  // Send public state to spectators
-  io.to(tableId).emit('public_state', table.getGameState());
+  // Send public state to players and spectators
+  const publicState = table.getPublicState();
+  io.to(tableId).emit('public_state', publicState);
+  io.to(`spectate-${tableId}`).emit('public_state', publicState);
+
+  // Broadcast action if provided
+  if (actionData) {
+    io.to(tableId).emit('action_taken', actionData);
+    io.to(`spectate-${tableId}`).emit('action_taken', actionData);
+  }
 
   // Check if it's a bot's turn
   checkBotTurn(tableId);
@@ -328,13 +407,34 @@ function checkBotTurn(tableId) {
       }
 
       console.log(`🤖 ${bot.name} (${bot.style}): ${decision.action}${decision.amount ? ' ' + decision.amount : ''}`);
-      broadcastGameState(tableId);
+      
+      // Broadcast bot action
+      const actionData = {
+        moltbookId: bot.name,
+        action: decision.action,
+        amount: decision.amount || null,
+        tableId
+      };
+      broadcastGameState(tableId, actionData);
 
       // Handle showdown / hand end
       if (result.showdown || result.winner) {
+        const winnerData = {
+          winners: result.showdown?.winners?.map(id => {
+            const p = table.players.get(id);
+            return { id, moltbookId: p?.moltbookId };
+          }) || (result.winner ? [{ id: result.winner.playerId, moltbookId: table.players.get(result.winner.playerId)?.moltbookId }] : []),
+          pot: result.showdown?.totalPot || result.winner?.chips || table.pot,
+          tableId
+        };
+        io.to(tableId).emit('hand_winner', winnerData);
+        io.to(`spectate-${tableId}`).emit('hand_winner', winnerData);
+
         setTimeout(() => {
           if (table.players.size >= 2) {
             table.startHand();
+            io.to(tableId).emit('new_hand', { handNumber: table.handNumber, tableId });
+            io.to(`spectate-${tableId}`).emit('new_hand', { handNumber: table.handNumber, tableId });
             broadcastGameState(tableId);
           }
         }, 3000);

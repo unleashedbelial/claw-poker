@@ -271,6 +271,46 @@ class Table {
     };
   }
 
+  // Get public state for spectators (no private cards unless showdown)
+  getPublicState() {
+    const players = [];
+    for (const [id, player] of this.players) {
+      const publicPlayer = {
+        id,
+        moltbookId: player.moltbookId,
+        chips: player.chips,
+        currentBet: player.currentBet,
+        folded: player.folded,
+        allIn: player.allIn,
+        hasCards: player.holeCards.length > 0,
+        lastAction: player.lastAction
+      };
+
+      // Only reveal cards at showdown
+      if (this.phase === GAME_PHASES.SHOWDOWN && !player.folded && player.holeCards.length > 0) {
+        publicPlayer.holeCards = player.holeCards.map(c => c.toJSON());
+      }
+
+      players.push(publicPlayer);
+    }
+
+    return {
+      tableId: this.id,
+      name: this.name,
+      phase: this.phase,
+      pot: this.pot,
+      communityCards: this.communityCards.map(c => c.toJSON()),
+      currentBet: this.currentBet,
+      dealerSeat: this.dealerSeat,
+      currentPlayerSeat: this.currentPlayerSeat,
+      players,
+      seats: this.seats,
+      handNumber: this.handNumber,
+      smallBlind: this.smallBlind,
+      bigBlind: this.bigBlind
+    };
+  }
+
   // Get private state for specific player
   getPlayerState(playerId) {
     const player = this.players.get(playerId);
