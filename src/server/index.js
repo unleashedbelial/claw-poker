@@ -158,18 +158,39 @@ app.get('/api/wallet/balance', (req, res) => {
 app.post('/api/wallet/withdraw', async (req, res) => {
   const { moltbookId, amount } = req.body;
   
-  if (!moltbookId || !amount) {
+  // Validate inputs
+  if (!moltbookId || amount === undefined) {
     return res.status(400).json({ error: 'moltbookId and amount required' });
   }
 
+  const withdrawAmount = parseFloat(amount);
+  if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+    return res.status(400).json({ error: 'Amount must be a positive number' });
+  }
+
+  if (withdrawAmount > 1000000) {
+    return res.status(400).json({ error: 'Amount exceeds maximum withdrawal limit' });
+  }
+
+  // Verify agent is authenticated
   if (!auth.isVerified(moltbookId)) {
-    return res.status(401).json({ error: 'Agent not verified' });
+    return res.status(401).json({ error: 'Agent not verified. Complete auth flow first.' });
+  }
+
+  // Check balance before attempting withdrawal
+  const balance = tokenManager.getPlayerBalance(moltbookId);
+  if (balance < withdrawAmount) {
+    return res.status(400).json({ 
+      error: `Insufficient balance. Have: ${balance}, requested: ${withdrawAmount}` 
+    });
   }
 
   try {
-    const result = await tokenManager.withdraw(moltbookId, amount);
+    const result = await tokenManager.withdraw(moltbookId, withdrawAmount);
+    console.log(`🏧 Withdrawal: ${moltbookId} withdrew ${withdrawAmount} $BELIAL`);
     res.json(result);
   } catch (error) {
+    console.error(`❌ Withdrawal failed for ${moltbookId}: ${error.message}`);
     res.status(400).json({ error: error.message });
   }
 });
