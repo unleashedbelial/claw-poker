@@ -16,6 +16,7 @@ const path = require('path');
 const { Table, GAME_PHASES } = require('../game/table');
 const { MoltbookAuth } = require('./auth');
 const { PokerBot } = require('../game/bot');
+const { TokenManager } = require('../solana/token');
 
 const app = express();
 const httpServer = createServer(app);
@@ -43,6 +44,7 @@ const rateLimiter = new RateLimiterMemory({
 // State
 const tables = new Map();
 const auth = new MoltbookAuth();
+const tokenManager = new TokenManager();
 const connectedPlayers = new Map(); // socketId -> { moltbookId, walletAddress, tableId, playerId }
 
 // Create default tables
@@ -103,6 +105,10 @@ app.post('/api/auth/verify', async (req, res) => {
   try {
     const result = await auth.verifyAgent(moltbookId, walletAddress);
     const session = auth.generateSessionToken(moltbookId, walletAddress);
+    
+    // Register player for token deposits
+    tokenManager.registerPlayer(moltbookId, walletAddress);
+    
     res.json({ 
       success: true, 
       agent: result.agent,
@@ -112,6 +118,74 @@ app.post('/api/auth/verify', async (req, res) => {
     res.status(401).json({ error: error.message });
   }
 });
+
+// ========== TOKEN ENDPOINTS ==========
+
+// Get deposit instructions
+app.get('/api/wallet/deposit', (req, res) => {
+  const { moltbookId } = req.query;
+  
+  if (!moltbookId) {
+    return res.status(400).json({ error: 'moltbookId required' });
+  }
+
+  if (!auth.isVerified(moltbookId)) {
+    return res.status(401).json({ error: 'Agent not verified' });
+  }
+
+  const instructions = tokenManager.getDepositInstructions(moltbookId);
+  const balance = tokenManager.getPlayerBalance(moltbookId);
+  
+  res.json({
+    ...instructions,
+    currentBalance: balance
+  });
+});
+
+// Get player balance
+app.get('/api/wallet/balance', (req, res) => {
+  const { moltbookId } = req.query;
+  
+  if (!moltbookId) {
+    return res.status(400).json({ error: 'moltbookId required' });
+  }
+
+  const balance = tokenManager.getPlayerBalance(moltbookId);
+  res.json({ moltbookId, balance });
+});
+
+// Withdraw $BELIAL
+app.post('/api/wallet/withdraw', async (req, res) => {
+  const { moltbookId, amount } = req.body;
+  
+  if (!moltbookId || !amount) {
+    return res.status(400).json({ error: 'moltbookId and amount required' });
+  }
+
+  if (!auth.isVerified(moltbookId)) {
+    return res.status(401).json({ error: 'Agent not verified' });
+  }
+
+  try {
+    const result = await tokenManager.withdraw(moltbookId, amount);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// House wallet info (public)
+app.get('/api/wallet/house', async (req, res) => {
+  const balance = await tokenManager.getHouseBalance();
+  res.json({
+    address: tokenManager.getDepositAddress(),
+    balance,
+    token: '5aZvoPUQjReSSf38hciLYHGZb8CLBSRP6LeBBraVZrHh',
+    tokenSymbol: '$BELIAL'
+  });
+});
+
+// ========== END TOKEN ENDPOINTS ==========
 
 // Track spectators
 const spectators = new Map(); // socketId -> tableId
@@ -178,6 +252,24 @@ io.on('connection', (socket) => {
       if (!table) {
         return socket.emit('error', { message: 'Table not found' });
       }
+
+      // Validate buy-in
+      if (buyIn < table.minBuyIn || buyIn > table.maxBuyIn) {
+        return socket.emit('error', { 
+          message: `Buy-in must be between ${table.minBuyIn} and ${table.maxBuyIn} $BELIAL` 
+        });
+      }
+
+      // Check $BELIAL balance
+      const balance = tokenManager.getPlayerBalance(moltbookId);
+      if (balance < buyIn) {
+        return socket.emit('error', { 
+          message: `Insufficient $BELIAL balance. Have: ${balance}, need: ${buyIn}. Deposit at: ${tokenManager.getDepositAddress()}` 
+        });
+      }
+
+      // Debit the buy-in from their balance
+      tokenManager.debitBalance(moltbookId, buyIn);
 
       // Add player to table
       const { seat, playerId } = table.addPlayer(moltbookId, walletAddress, buyIn);
@@ -308,6 +400,17 @@ function handleDisconnect(socket) {
     const table = tables.get(connection.tableId);
     if (table) {
       const chips = table.removePlayer(connection.playerId);
+      
+      // Credit chips back to player's $BELIAL balance
+      if (chips > 0) {
+        try {
+          tokenManager.creditBalance(connection.moltbookId, chips);
+          console.log(`💰 Credited ${chips} $BELIAL back to ${connection.moltbookId}`);
+        } catch (e) {
+          console.error(`Failed to credit chips: ${e.message}`);
+        }
+      }
+
       const disconnectData = {
         playerId: connection.playerId,
         moltbookId: connection.moltbookId,

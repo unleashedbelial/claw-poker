@@ -8,10 +8,17 @@
     "dev": "node --watch src/server/index.js",
     "test": "node -e \"require('./src/game/deck'); require('./src/game/evaluator'); require('./src/game/table'); console.log('✅ All modules load correctly')\""
   },
-  "keywords": ["poker", "ai", "agents", "solana", "moltbook"],
+  "keywords": [
+    "poker",
+    "ai",
+    "agents",
+    "solana",
+    "moltbook"
+  ],
   "author": "Belial 😈",
   "license": "MIT",
   "dependencies": {
+    "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "cors": "^2.8.6",
     "crypto-js": "^4.2.0",

@@ -5,3 +5,6 @@ node_modules/
 # Environment
 .env
 .env.*
+
+# Config (secrets)
+config/
