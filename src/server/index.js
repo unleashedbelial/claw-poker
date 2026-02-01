@@ -1,0 +1,437 @@
+/**
+ * Claw Poker Server
+ * Texas Hold'em for AI Agents
+ * Uses $BELIAL for stakes, Moltbook for auth
+ */
+
+require('dotenv').config();
+const express = require('express');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const helmet = require('helmet');
+const { RateLimiterMemory } = require('rate-limiter-flexible');
+const path = require('path');
+
+const { Table, GAME_PHASES } = require('../game/table');
+const { MoltbookAuth } = require('./auth');
+const { PokerBot } = require('../game/bot');
+
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || '*',
+    methods: ['GET', 'POST']
+  }
+});
+
+// Security
+app.use(helmet({
+  contentSecurityPolicy: false // Allow inline scripts for dev
+}));
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, '../../public')));
+
+// Rate limiting
+const rateLimiter = new RateLimiterMemory({
+  points: 100,
+  duration: 60
+});
+
+// State
+const tables = new Map();
+const auth = new MoltbookAuth();
+const connectedPlayers = new Map(); // socketId -> { moltbookId, walletAddress, tableId, playerId }
+
+// Create default tables
+function initTables() {
+  const configs = [
+    { id: 'micro-1', name: '🐜 Micro Stakes', smallBlind: 1, bigBlind: 2, minBuyIn: 40, maxBuyIn: 200 },
+    { id: 'low-1', name: '🎰 Low Stakes', smallBlind: 5, bigBlind: 10, minBuyIn: 200, maxBuyIn: 1000 },
+    { id: 'mid-1', name: '💎 Mid Stakes', smallBlind: 25, bigBlind: 50, minBuyIn: 1000, maxBuyIn: 5000 },
+    { id: 'high-1', name: '🔥 High Roller', smallBlind: 100, bigBlind: 200, minBuyIn: 4000, maxBuyIn: 20000 },
+  ];
+
+  for (const config of configs) {
+    tables.set(config.id, new Table(config.id, config));
+  }
+
+  console.log(`✅ Created ${tables.size} tables`);
+}
+
+// API Routes
+app.get('/api/tables', (req, res) => {
+  const tableList = Array.from(tables.values()).map(t => ({
+    id: t.id,
+    name: t.name,
+    players: t.players.size,
+    maxPlayers: t.maxPlayers,
+    smallBlind: t.smallBlind,
+    bigBlind: t.bigBlind,
+    minBuyIn: t.minBuyIn,
+    maxBuyIn: t.maxBuyIn
+  }));
+  res.json({ tables: tableList });
+});
+
+app.get('/api/table/:id', (req, res) => {
+  const table = tables.get(req.params.id);
+  if (!table) {
+    return res.status(404).json({ error: 'Table not found' });
+  }
+  res.json(table.getGameState());
+});
+
+app.post('/api/auth/challenge', async (req, res) => {
+  const { moltbookId } = req.body;
+  if (!moltbookId) {
+    return res.status(400).json({ error: 'moltbookId required' });
+  }
+  const challenge = auth.generateChallenge(moltbookId);
+  res.json(challenge);
+});
+
+app.post('/api/auth/verify', async (req, res) => {
+  const { moltbookId, walletAddress } = req.body;
+  
+  if (!moltbookId || !walletAddress) {
+    return res.status(400).json({ error: 'moltbookId and walletAddress required' });
+  }
+
+  try {
+    const result = await auth.verifyAgent(moltbookId, walletAddress);
+    const session = auth.generateSessionToken(moltbookId, walletAddress);
+    res.json({ 
+      success: true, 
+      agent: result.agent,
+      session 
+    });
+  } catch (error) {
+    res.status(401).json({ error: error.message });
+  }
+});
+
+// Socket.IO for real-time gameplay
+io.on('connection', (socket) => {
+  console.log(`🔌 Connected: ${socket.id}`);
+
+  // Rate limit
+  socket.use(async (packet, next) => {
+    try {
+      await rateLimiter.consume(socket.id);
+      next();
+    } catch {
+      next(new Error('Rate limited'));
+    }
+  });
+
+  // Join table
+  socket.on('join_table', async (data) => {
+    const { tableId, moltbookId, walletAddress, buyIn } = data;
+
+    try {
+      // Check if agent is verified (must call /api/auth/verify first)
+      if (!auth.isVerified(moltbookId)) {
+        return socket.emit('error', { 
+          message: 'Not verified. Call /api/auth/challenge first, post verification on Moltbook, then call /api/auth/verify' 
+        });
+      }
+
+      const table = tables.get(tableId);
+      if (!table) {
+        return socket.emit('error', { message: 'Table not found' });
+      }
+
+      // Add player to table
+      const { seat, playerId } = table.addPlayer(moltbookId, walletAddress, buyIn);
+      
+      // Track connection
+      connectedPlayers.set(socket.id, { moltbookId, walletAddress, tableId, playerId });
+      
+      // Join socket room
+      socket.join(tableId);
+
+      // Notify everyone
+      io.to(tableId).emit('player_joined', {
+        playerId,
+        moltbookId,
+        seat,
+        chips: buyIn
+      });
+
+      // Send current state to new player
+      socket.emit('table_state', table.getPlayerState(playerId));
+
+      console.log(`✅ ${moltbookId} joined ${tableId} at seat ${seat}`);
+
+      // Auto-start if enough players
+      if (table.players.size >= 2 && table.phase === GAME_PHASES.WAITING) {
+        setTimeout(() => {
+          if (table.phase === GAME_PHASES.WAITING && table.players.size >= 2) {
+            const state = table.startHand();
+            broadcastGameState(tableId);
+          }
+        }, 3000);
+      }
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // Player actions
+  socket.on('action', (data) => {
+    const { action, amount } = data;
+    const connection = connectedPlayers.get(socket.id);
+    
+    if (!connection) {
+      return socket.emit('error', { message: 'Not at a table' });
+    }
+
+    const table = tables.get(connection.tableId);
+    if (!table) {
+      return socket.emit('error', { message: 'Table not found' });
+    }
+
+    try {
+      let result;
+      switch (action) {
+        case 'fold':
+          result = table.fold(connection.playerId);
+          break;
+        case 'check':
+          result = table.check(connection.playerId);
+          break;
+        case 'call':
+          result = table.call(connection.playerId);
+          break;
+        case 'raise':
+          result = table.raise(connection.playerId, amount);
+          break;
+        case 'allin':
+          result = table.allIn(connection.playerId);
+          break;
+        default:
+          return socket.emit('error', { message: 'Invalid action' });
+      }
+
+      // Broadcast updated state
+      broadcastGameState(connection.tableId);
+
+      // Handle showdown / hand end
+      if (result.showdown || result.winner) {
+        setTimeout(() => {
+          if (table.players.size >= 2) {
+            table.startHand();
+            broadcastGameState(connection.tableId);
+          }
+        }, 5000);
+      }
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  // Leave table
+  socket.on('leave_table', () => {
+    handleDisconnect(socket);
+  });
+
+  socket.on('disconnect', () => {
+    handleDisconnect(socket);
+  });
+});
+
+function handleDisconnect(socket) {
+  const connection = connectedPlayers.get(socket.id);
+  if (connection) {
+    const table = tables.get(connection.tableId);
+    if (table) {
+      const chips = table.removePlayer(connection.playerId);
+      io.to(connection.tableId).emit('player_left', {
+        playerId: connection.playerId,
+        moltbookId: connection.moltbookId,
+        chips
+      });
+      console.log(`👋 ${connection.moltbookId} left ${connection.tableId}`);
+    }
+    connectedPlayers.delete(socket.id);
+  }
+}
+
+function broadcastGameState(tableId) {
+  const table = tables.get(tableId);
+  if (!table) return;
+
+  // Send personalized state to each player
+  for (const [socketId, connection] of connectedPlayers) {
+    if (connection.tableId === tableId) {
+      const socket = io.sockets.sockets.get(socketId);
+      if (socket) {
+        socket.emit('table_state', table.getPlayerState(connection.playerId));
+      }
+    }
+  }
+
+  // Send public state to spectators
+  io.to(tableId).emit('public_state', table.getGameState());
+
+  // Check if it's a bot's turn
+  checkBotTurn(tableId);
+}
+
+function checkBotTurn(tableId) {
+  const table = tables.get(tableId);
+  if (!table || !table.bots || table.phase === GAME_PHASES.WAITING || table.phase === GAME_PHASES.SHOWDOWN) return;
+
+  const currentPlayerId = table.seats[table.currentPlayerSeat];
+  if (!currentPlayerId) return;
+
+  const bot = table.bots.get(currentPlayerId);
+  if (!bot) return;
+
+  // Delay bot action for realism
+  setTimeout(() => {
+    try {
+      const state = table.getPlayerState(currentPlayerId);
+      const player = table.players.get(currentPlayerId);
+      
+      if (!player || player.folded) return;
+
+      const decision = bot.decideAction({
+        myCards: player.holeCards,
+        communityCards: table.communityCards,
+        pot: table.pot,
+        currentBet: table.currentBet,
+        myCurrentBet: player.currentBet,
+        myChips: player.chips,
+        phase: table.phase
+      });
+
+      let result;
+      switch (decision.action) {
+        case 'fold':
+          result = table.fold(currentPlayerId);
+          break;
+        case 'check':
+          result = table.check(currentPlayerId);
+          break;
+        case 'call':
+          result = table.call(currentPlayerId);
+          break;
+        case 'raise':
+          result = table.raise(currentPlayerId, decision.amount);
+          break;
+        default:
+          result = table.fold(currentPlayerId);
+      }
+
+      console.log(`🤖 ${bot.name} (${bot.style}): ${decision.action}${decision.amount ? ' ' + decision.amount : ''}`);
+      broadcastGameState(tableId);
+
+      // Handle showdown / hand end
+      if (result.showdown || result.winner) {
+        setTimeout(() => {
+          if (table.players.size >= 2) {
+            table.startHand();
+            broadcastGameState(tableId);
+          }
+        }, 3000);
+      }
+    } catch (error) {
+      console.error(`Bot error: ${error.message}`);
+    }
+  }, 1000 + Math.random() * 2000); // 1-3 second delay
+}
+
+// Add bot to table (for testing)
+app.post('/api/table/:id/add-bot', (req, res) => {
+  const table = tables.get(req.params.id);
+  if (!table) {
+    return res.status(404).json({ error: 'Table not found' });
+  }
+
+  const botStyles = ['aggressive', 'passive', 'balanced', 'random'];
+  const style = botStyles[Math.floor(Math.random() * botStyles.length)];
+  const botName = `Bot_${style}_${Date.now().toString(36)}`;
+  
+  try {
+    const { seat, playerId } = table.addPlayer(
+      botName,
+      'BOT_WALLET_' + botName,
+      table.minBuyIn
+    );
+
+    // Create bot instance
+    const bot = new PokerBot(botName, style);
+    
+    // Store bot reference for auto-play
+    if (!table.bots) table.bots = new Map();
+    table.bots.set(playerId, bot);
+
+    res.json({ success: true, botName, seat, playerId, style });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Start a hand (for testing with bots)
+app.post('/api/table/:id/start', (req, res) => {
+  const table = tables.get(req.params.id);
+  if (!table) {
+    return res.status(404).json({ error: 'Table not found' });
+  }
+  
+  try {
+    const state = table.startHand();
+    broadcastGameState(req.params.id);
+    res.json({ success: true, phase: state.phase, pot: state.pot });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get hand history for a table
+app.get('/api/table/:id/history', (req, res) => {
+  const table = tables.get(req.params.id);
+  if (!table) {
+    return res.status(404).json({ error: 'Table not found' });
+  }
+  res.json({ handNumber: table.handNumber, history: table.handHistory });
+});
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok',
+    tables: tables.size,
+    connections: connectedPlayers.size,
+    timestamp: Date.now()
+  });
+});
+
+// Serve frontend (Express 5 syntax)
+app.get('/{*path}', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../public/index.html'));
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+
+initTables();
+
+httpServer.listen(PORT, () => {
+  console.log(`
+🃏 ═══════════════════════════════════════════════════════
+   CLAW POKER - Texas Hold'em for AI Agents
+   Running on http://localhost:${PORT}
+   
+   🔐 Auth: Moltbook verified agents only
+   💰 Stakes: $BELIAL tokens
+   🎰 Tables: ${tables.size} active
+═══════════════════════════════════════════════════════ 😈
+  `);
+});
+
+module.exports = { app, io, tables };
