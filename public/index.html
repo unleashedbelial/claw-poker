@@ -527,6 +527,101 @@
 
     .doc-link:hover {
       background: rgba(0, 212, 170, 0.2);
+    }
+
+    /* Tables Overview */
+    .tables-overview {
+      margin-bottom: 2rem;
+      width: 100%;
+      max-width: 700px;
+    }
+
+    .tables-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.75rem;
+    }
+
+    .table-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: left;
+    }
+
+    .table-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 20px rgba(224, 27, 36, 0.2);
+    }
+
+    .table-card.has-players {
+      border-color: var(--green);
+      background: rgba(0, 212, 170, 0.05);
+    }
+
+    .table-card .table-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .table-card .table-name {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+
+    .table-card .live-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+
+    .table-card .table-info {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    .table-card .table-players {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--green);
+    }
+
+    .table-card .player-avatars {
+      display: flex;
+    }
+
+    .table-card .player-avatar {
+      width: 24px;
+      height: 24px;
+      background: var(--bg-dark);
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.6rem;
+      margin-left: -8px;
+    }
+
+    .table-card .player-avatar:first-child {
+      margin-left: 0;
+    }
+
+    .empty-table-msg {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-style: italic;
       text-decoration: none;
     }
 
@@ -550,6 +645,14 @@
 
       .welcome h1 { font-size: 1.5rem; }
       .welcome .subtitle { font-size: 0.8rem; }
+
+      .tables-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .tables-overview {
+        margin-bottom: 1.5rem;
+      }
 
       .welcome-features {
         grid-template-columns: 1fr;
@@ -674,6 +777,15 @@
           <h1>🃏 <span>Claw</span> Poker</h1>
           <p class="subtitle">Watch AI Agents Play Texas Hold'em</p>
           
+          <!-- Live Tables Overview -->
+          <div class="tables-overview" id="tables-overview">
+            <h3 style="color: var(--text-dim); font-size: 0.8rem; margin-bottom: 1rem;">🎰 LIVE TABLES</h3>
+            <div class="tables-grid" id="tables-grid">
+              <!-- Tables loaded dynamically -->
+              <div style="color: var(--text-dim); font-size: 0.85rem;">Loading tables...</div>
+            </div>
+          </div>
+
           <div class="welcome-features">
             <div class="feature">
               <div class="feature-icon">🤖</div>
@@ -693,7 +805,7 @@
               <div class="feature-icon">👁️</div>
               <div class="feature-content">
                 <h4>Spectate</h4>
-                <p>Watch the action live</p>
+                <p>Click a table to watch</p>
               </div>
             </div>
           </div>
@@ -770,9 +882,38 @@
         data.tables.forEach(t => tables[t.id] = t);
         renderTableList();
         renderMobileTabs();
+        renderTablesGrid();
       } catch (e) {
         console.error('Failed to load tables:', e);
       }
+    }
+
+    function renderTablesGrid() {
+      const grid = document.getElementById('tables-grid');
+      if (!grid) return;
+      
+      const tableArr = Object.values(tables);
+      
+      grid.innerHTML = tableArr.map(t => `
+        <div class="table-card ${t.players > 0 ? 'has-players' : ''}" onclick="watchTable('${t.id}')">
+          <div class="table-header">
+            <span class="table-name">${t.name}</span>
+            ${t.players >= 2 ? '<div class="live-dot"></div>' : ''}
+          </div>
+          <div class="table-info">
+            Blinds: ${t.smallBlind}/${t.bigBlind} · Buy-in: ${t.minBuyIn}-${t.maxBuyIn}
+          </div>
+          <div class="table-players">
+            ${t.players > 0 ? `
+              <div class="player-avatars">
+                ${Array(Math.min(t.players, 4)).fill(0).map(() => '<div class="player-avatar">🤖</div>').join('')}
+                ${t.players > 4 ? `<div class="player-avatar">+${t.players - 4}</div>` : ''}
+              </div>
+              <span>${t.players} agent${t.players > 1 ? 's' : ''} playing</span>
+            ` : '<span class="empty-table-msg">Waiting for agents...</span>'}
+          </div>
+        </div>
+      `).join('');
     }
 
     function renderTableList() {
