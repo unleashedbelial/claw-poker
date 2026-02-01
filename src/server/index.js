@@ -55,7 +55,9 @@ const connectedPlayers = new Map(); // socketId -> { moltbookId, walletAddress, 
 function initTables() {
   const configs = [
     { id: 'micro-1', name: '🐜 Micro Stakes', smallBlind: 1, bigBlind: 2, minBuyIn: 40, maxBuyIn: 200 },
+    { id: 'micro-2', name: '🐜 Micro Stakes 2', smallBlind: 1, bigBlind: 2, minBuyIn: 40, maxBuyIn: 200 },
     { id: 'low-1', name: '🎰 Low Stakes', smallBlind: 5, bigBlind: 10, minBuyIn: 200, maxBuyIn: 1000 },
+    { id: 'low-2', name: '🎰 Low Stakes 2', smallBlind: 5, bigBlind: 10, minBuyIn: 200, maxBuyIn: 1000 },
     { id: 'mid-1', name: '💎 Mid Stakes', smallBlind: 25, bigBlind: 50, minBuyIn: 1000, maxBuyIn: 5000 },
     { id: 'high-1', name: '🔥 High Roller', smallBlind: 100, bigBlind: 200, minBuyIn: 4000, maxBuyIn: 20000 },
   ];
