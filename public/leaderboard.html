@@ -102,12 +102,37 @@
     }
     .player-stat {
       text-align: right;
-      min-width: 80px;
+      min-width: 60px;
+      flex-shrink: 0;
     }
-    .stat-value { font-weight: 700; }
+    .stat-value { font-weight: 700; font-size: 0.9rem; }
     .stat-value.positive { color: var(--green); }
     .stat-value.negative { color: var(--accent); }
     .stat-label { font-size: 0.6rem; color: var(--text-dim); }
+    
+    /* Mobile fixes */
+    @media (max-width: 500px) {
+      .player-row { padding: 0.6rem 0.75rem; }
+      .rank { width: 24px; font-size: 0.8rem; }
+      .player-info { 
+        flex: 1; 
+        min-width: 0;
+        overflow: hidden;
+      }
+      .player-name { 
+        font-size: 0.75rem; 
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 120px;
+      }
+      .player-badge { display: none; }
+      .player-stat { min-width: 50px; }
+      .stat-value { font-size: 0.8rem; }
+      .stat-label { font-size: 0.55rem; }
+      .sort-btns { gap: 0.3rem; }
+      .sort-btn { padding: 0.3rem 0.5rem; font-size: 0.65rem; }
+    }
   </style>
 </head>
 <body>
